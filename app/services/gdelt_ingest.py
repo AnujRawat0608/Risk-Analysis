@@ -16,6 +16,16 @@ Changes from v1:
     response or transient API error can't abort the rest of the cycle.
   - Reports success/failure to source_health so a silent GDELT outage or
     schema change shows up on a dashboard instead of just going quiet.
+  - Chokepoint matching is now an exact lookup against a fixed list of
+    names given to the LLM, rather than a free-text guess fuzzy-matched
+    via ILIKE — removes an entire class of silent "extracted but never
+    linked to any chokepoint" events.
+  - event_time is now parsed from GDELT's own `seendate` field (the
+    article's actual publish time) instead of defaulting to insertion
+    time. Without this, every event's age is measured from when you
+    happened to run the script, not from when the event actually
+    occurred — which silently breaks risk_scoring.py's 72-hour lookback
+    window the moment more than 72 hours pass between ingestion runs.
 """
 
 from dotenv import load_dotenv
@@ -25,6 +35,7 @@ import os
 import json
 import logging
 import requests
+from datetime import datetime, timezone
 from typing import Optional
 
 from groq import Groq
@@ -52,27 +63,44 @@ SEARCH_QUERIES = [
     "border crossing closed trade",
     "houthi shipping attack",
     "drought canal draft restriction",
+    "Russia Ukraine war",
+    "Russian airspace ban carriers",
+    "EU sanctions Russia aviation",
 ]
 
 client = Groq()  # picks up GROQ_API_KEY from env
 
-EXTRACTION_SYSTEM_PROMPT = """You are a supply chain risk analyst. You will be given a news \
+CHOKEPOINT_NAMES = [
+    "Strait of Hormuz",
+    "Suez Canal",
+    "Strait of Malacca",
+    "Bab-el-Mandeb Strait",
+    "Panama Canal",
+    "Taiwan Strait",
+    "Black Sea Corridor",
+    "Russian Airspace Corridor",
+    "China-Europe Rail (Kazakhstan corridor)",
+    "US-Mexico Border (Laredo)",
+]
+
+EXTRACTION_SYSTEM_PROMPT = f"""You are a supply chain risk analyst. You will be given a news \
 article headline and URL. Determine if it describes a real event affecting global trade \
 routes, shipping lanes, airspace, or land/rail freight corridors.
 
 Respond ONLY with a JSON object with this exact shape:
-{
+{{
   "is_relevant": boolean,
   "event_type": "conflict" | "blockade" | "sanctions" | "strike" | "piracy" | "weather" | "congestion" | "regulatory" | "other",
   "severity": integer 1-5 (1=minor/local, 5=critical/major route closure),
   "confidence": float 0-1,
-  "likely_chokepoint": string or null,
+  "likely_chokepoint": one of {json.dumps(CHOKEPOINT_NAMES)} or null,
   "summary": string
-}
+}}
 
-If is_relevant is false, you may leave other fields as null/0. Be conservative: only mark \
-high severity (4-5) for events that plausibly close or seriously constrain a route, not routine \
-political friction."""
+Only set likely_chokepoint to one of the exact strings in that list, or null if none clearly \
+apply. Do not invent a name not in the list. If is_relevant is false, you may leave other \
+fields as null/0. Be conservative: only mark high severity (4-5) for events that plausibly \
+close or seriously constrain a route, not routine political friction."""
 
 
 def fetch_gdelt_articles(query: str, max_records: int = 50) -> list[dict]:
@@ -124,16 +152,29 @@ def extract_event(article: dict) -> Optional[dict]:
 
     parsed["headline"] = headline
     parsed["source_ref"] = url
+    # GDELT's own publish timestamp for the article, e.g. "20260924T153000Z".
+    # Captured here (not computed later) so raw_payload also preserves it.
+    parsed["seendate"] = article.get("seendate")
     return parsed
+
+
+def parse_event_time(seendate: Optional[str]) -> Optional[datetime]:
+    """GDELT's seendate is typically 'YYYYMMDDTHHMMSSZ'. Falls back to None
+    (caller then defaults to now()) if missing or in an unexpected format —
+    a parsing surprise here must not crash the whole ingestion cycle."""
+    if not seendate:
+        return None
+    try:
+        return datetime.strptime(seendate, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        logger.warning("Could not parse seendate %r, falling back to insertion time", seendate)
+        return None
 
 
 def match_chokepoint_id(cur, chokepoint_name: Optional[str]) -> Optional[str]:
     if not chokepoint_name:
         return None
-    cur.execute(
-        "SELECT id FROM chokepoints WHERE name ILIKE %s LIMIT 1",
-        (f"%{chokepoint_name}%",),
-    )
+    cur.execute("SELECT id FROM chokepoints WHERE name = %s", (chokepoint_name,))
     row = cur.fetchone()
     return row[0] if row else None
 
@@ -141,6 +182,8 @@ def match_chokepoint_id(cur, chokepoint_name: Optional[str]) -> Optional[str]:
 def store_event(cur, parsed: dict) -> tuple[Optional[str], Optional[str]]:
     """Returns (event_id, chokepoint_id). event_id is None if this
     source_ref was already stored (duplicate across overlapping queries)."""
+    event_time = parse_event_time(parsed.get("seendate"))
+
     event_id = insert_event_dedup(
         cur,
         source="GDELT",
@@ -150,6 +193,7 @@ def store_event(cur, parsed: dict) -> tuple[Optional[str], Optional[str]]:
         summary=parsed.get("summary"),
         severity=parsed.get("severity") or 1,
         confidence=parsed.get("confidence") or 0.5,
+        event_time=event_time,
         raw_payload=parsed,
     )
     if not event_id:
@@ -177,7 +221,7 @@ def run_ingestion_cycle():
                     logger.error("GDELT fetch failed for query '%s': %s", query, e)
                     continue
 
-                time.sleep(2)  # be polite to GDELT's free API between queries
+                time.sleep(6)  # be polite to GDELT's free API between queries
 
                 for article in articles:
                     try:
