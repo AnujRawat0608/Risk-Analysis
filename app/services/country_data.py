@@ -125,3 +125,38 @@ def get_centroid(country: str) -> Optional[tuple[float, float]]:
 
 def is_landlocked(country: str) -> bool:
     return normalize_country(country) in LANDLOCKED_COUNTRIES
+
+    # Which sea region a country's main ports belong to. Used by SEA_CORRIDORS in
+# route_inference.py. A country not listed here has no sea assessment (the lane
+# shows "unknown"), so add countries as you onboard them. Multi-coast countries
+# (United States, Canada, Saudi Arabia, Egypt, Turkey...) are left out on
+# purpose: their route depends on which coast ships use.
+SEA_REGIONS: dict[str, str] = {
+    # South Asia
+    "india": "south_asia", "pakistan": "south_asia", "bangladesh": "south_asia", "sri lanka": "south_asia",
+    # East Asia
+    "china": "east_asia", "taiwan": "east_asia", "south korea": "east_asia", "japan": "east_asia",
+    "hong kong": "east_asia",
+    # South-East Asia
+    "vietnam": "southeast_asia", "thailand": "southeast_asia", "malaysia": "southeast_asia",
+    "singapore": "southeast_asia", "indonesia": "southeast_asia", "philippines": "southeast_asia",
+    "cambodia": "southeast_asia", "myanmar": "southeast_asia",
+    # Persian Gulf
+    "united arab emirates": "gulf", "uae": "gulf", "qatar": "gulf", "kuwait": "gulf",
+    "bahrain": "gulf", "iraq": "gulf", "iran": "gulf",
+    # Northern Europe
+    "germany": "europe_north", "netherlands": "europe_north", "belgium": "europe_north",
+    "united kingdom": "europe_north", "uk": "europe_north", "poland": "europe_north",
+    "sweden": "europe_north", "norway": "europe_north", "denmark": "europe_north",
+    "finland": "europe_north", "ireland": "europe_north",
+    # Mediterranean Europe
+    "italy": "europe_med", "spain": "europe_med", "greece": "europe_med", "france": "europe_med",
+    "portugal": "europe_med", "croatia": "europe_med", "slovenia": "europe_med",
+    # Black Sea
+    "ukraine": "black_sea", "russia": "black_sea", "romania": "black_sea", "bulgaria": "black_sea",
+    "georgia": "black_sea",
+}
+
+
+def get_sea_region(country: str) -> Optional[str]:
+    return SEA_REGIONS.get(normalize_country(country))

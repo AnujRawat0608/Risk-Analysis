@@ -21,6 +21,9 @@ not just log it.
 
 Change from v1: uses the shared pooled get_conn() instead of opening a
 fresh psycopg2 connection per call.
+Change from v2: the headlines returned with a lane are limited to the same
+72-hour window the scoring uses, so old articles can't sit next to a score
+that ignores them.
 """
 
 from typing import Optional
@@ -29,6 +32,9 @@ from .db import get_conn
 from .route_inference import get_relevant_chokepoints, mode_viability
 
 MODES = ["sea", "air", "road", "rail"]
+
+# Must match LOOKBACK_HOURS in risk_scoring.py.
+EVENT_WINDOW_HOURS = 72
 
 # get_relevant_chokepoints expects chokepoints.mode values, which differ
 # from the user-facing mode names ('sea' -> 'maritime', 'road' -> 'land').
@@ -67,10 +73,11 @@ def _driving_events_for_chokepoints(cur, chokepoint_ids: list) -> list[dict]:
         JOIN event_chokepoints ec ON ec.event_id = e.id
         JOIN chokepoints c ON c.id = ec.chokepoint_id
         WHERE c.id = ANY(%s::uuid[])
+          AND e.event_time > now() - make_interval(hours => %s)
         ORDER BY e.event_time DESC
         LIMIT 5
         """,
-        (chokepoint_ids,),
+        (chokepoint_ids, EVENT_WINDOW_HOURS),
     )
     return cur.fetchall()
 
@@ -161,5 +168,5 @@ def assess_route_risk(origin_country: str, destination_country: str) -> dict:
 
 if __name__ == "__main__":
     import json
-    result = assess_route_risk("Taiwan", "Netherlands")
+    result = assess_route_risk("India", "Germany")
     print(json.dumps(result, indent=2, default=str))

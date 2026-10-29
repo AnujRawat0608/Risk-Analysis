@@ -50,7 +50,7 @@ logger = logging.getLogger("gdelt_ingest")
 
 GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc"
 DB_DSN = os.environ["DATABASE_URL"]
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 SOURCE_NAME = "GDELT"
 
 SEARCH_QUERIES = [
